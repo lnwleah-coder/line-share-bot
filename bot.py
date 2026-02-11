@@ -153,7 +153,8 @@ def handle_text(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"📊 สรุปยอดโอนรอบนี้\n🏆 ผู้รับ: คุณ {name}\n🏦 บัญชี: {text}\n💸 สมาชิกท่านอื่นโอนคนละ {state.get('share_amount')} บ."))
 
     elif text == "/status":
-        msg = f"📊 ข้อมูลวงแชร์:\n💰 ยอดส่ง: {state.get('share_amount')} บ.\n📅 เปียร์วันที่: {state.get('play_date')} เวลา {state.get('play_time')}\n🏆 คนได้แล้ว: {', '.join(state.get('won_names',[]))}\n💎 กองกลาง: {state.get('pot_balance',0)} บ."
+        won = ", ".join(state.get("won_names", [])) if state.get("won_names") else "ยังไม่มี"
+        msg = f"📊 ข้อมูลวงแชร์:\n💰 ยอดส่ง: {state.get('share_amount')} บ.\n📅 เปียร์วันที่: {state.get('play_date')} เวลา {state.get('play_time')}\n🏆 คนได้แล้ว: {won}\n💎 กองกลาง: {state.get('pot_balance',0)} บ."
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg))
 
 if __name__ == "__main__":
