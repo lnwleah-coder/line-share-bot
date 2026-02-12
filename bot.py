@@ -12,12 +12,12 @@ from linebot.exceptions import InvalidSignatureError, LineBotApiError
 from linebot.models import MessageEvent, TextMessage, ImageMessage, TextSendMessage
 
 # --- 0. ข้อมูลเวอร์ชัน ---
-BOT_VERSION = "Final Full Option"
-LAST_UPDATE = "12/02/2026 (All Features Included)"
+BOT_VERSION = "1.4.3"
+LAST_UPDATE = "12/02/2026 (Fix Start_Bid Crash)"
 
 app = Flask(__name__)
 
-# --- 1. ตั้งค่า LINE API (Credentials ของท่าน) ---
+# --- 1. ตั้งค่า LINE API ---
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN', '57EveirH1YZetV9+CwFRuZOhTE5yZ0fiqpLfyNdspxI7mRRXNrCuiKtI/Ie69Wcs6mNqXJ6AdrN3inLxptPdFjPfeDUap8PtgeLhBSULc4BQkVTolXNeJGUVjnXtjmc/OPnmLN93NLNpnq4AJNZQ3QdB04t89/1O/w1cDnyilFU=')
 LINE_CHANNEL_SECRET = os.environ.get('LINE_CHANNEL_SECRET', '7c335f0de71e4cb1379a75134e3a7a50')
 
@@ -37,7 +37,7 @@ tz_bangkok = pytz.timezone('Asia/Bangkok')
 def get_state(): return ref.get() or {}
 def get_now_str(): return datetime.datetime.now(tz_bangkok).strftime('%d/%m/%Y %H:%M')
 
-# --- 🎁 ฟังก์ชันสุ่มคำพูดพี่รวย (Witty Persona) ---
+# --- 🎁 ฟังก์ชันสุ่มคำพูดพี่รวย ---
 def get_witty_speech(type, data=None):
     speeches = {
         "start": [
@@ -61,10 +61,13 @@ def get_witty_speech(type, data=None):
             f"⚠️ ผิดกติกาครับ! ต้องใส่ {data} บ. ขึ้นไป ลองใหม่อีกทีนะคนหล่อ/คนสวย"
         ]
     }
-    return random.choice(speeches[type]) if type in speeches else ""
+    # กันเหนียวถ้า type ไม่เจอ
+    if type in speeches:
+        return random.choice(speeches[type])
+    return ""
 
 # ======================================================
-# 🕒 ส่วนที่ 1: ระบบนับถอยหลัง (Countdown Logic)
+# 🕒 ส่วนที่ 1: ระบบนับถอยหลัง
 # ======================================================
 def countdown_logic(reply_to_id, bid_amount):
     # จังหวะที่ 1: รอ 30 วินาที
@@ -73,15 +76,13 @@ def countdown_logic(reply_to_id, bid_amount):
     state = get_state()
     auction = state.get("auction", {})
     
-    # เช็คว่าราคายังเท่าเดิมไหม (ถ้าเปลี่ยนแสดงว่ามีคนบิดสู้ไปแล้ว)
     if auction.get("is_active") and auction.get("current_price") == bid_amount:
         
         # [สุ่มคำพูด]: แจ้งเตือน 30 วิสุดท้าย
         try:
             msg_30s = get_witty_speech("30s", bid_amount)
             line_bot_api.push_message(reply_to_id, TextSendMessage(text=msg_30s))
-        except LineBotApiError as e:
-            print(f"Push Error (30s): {e}")
+        except: pass
 
         # [นับถอยหลัง]: 10 ถึง 1
         for i in range(10, 0, -1):
@@ -118,8 +119,7 @@ def countdown_logic(reply_to_id, bid_amount):
             try:
                 msg = f"🏁 ปิดประมูลเรียบร้อย!\n🏆 เศรษฐีใหม่: คุณ {winner}\n💰 ยอดบิด: {bid_amount} บ.\n📅 วันที่ชนะ: {now_date}\n⚠️ รบกวนส่งเลขบัญชีด้วยครับ เพื่อนๆ รอโอน!"
                 line_bot_api.push_message(reply_to_id, TextSendMessage(text=msg))
-            except LineBotApiError as e:
-                print(f"Push Error (End): {e}")
+            except: pass
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -162,22 +162,32 @@ def handle_text(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📝 เริ่มตั้งค่าใหม่ (พี่รวย)\n1. ยอดส่งต่อคนเท่าไหร่? (ตัวเลข)"))
         return
 
-    # 2. เปิดประมูล (แก้บั๊ก Setup ค้าง + สุ่มคำพูด)
+    # 2. เปิดประมูล (แก้ไขจุดที่เคยพัง)
     if text == "/start_bid":
         try:
-            ref.update({"setup_step": 0}) # ปลดล็อก
+            # 2.1 บังคับรีเซ็ต Setup เป็น 0 เพื่อแก้บั๊กค้าง
+            ref.update({"setup_step": 0}) 
+            
+            # 2.2 รีเซ็ตสถานะประมูล
             ref.child('auction').update({"is_active": True, "current_price": 0, "winner_name": "", "winner_id": ""})
             
-            # ล้างสถานะจ่ายเงิน
-            members = state.get("members") or {}
-            for mid in members: 
-                ref.child('members').child(mid).update({"has_paid": False})
+            # 2.3 ล้างสถานะจ่ายเงิน (ใส่ Check กันพัง)
+            members = state.get("members")
+            if members: # ถ้ามีสมาชิกในระบบค่อยทำ ถ้าไม่มีก็ข้ามไป (ไม่ Error)
+                for mid in members: 
+                    ref.child('members').child(mid).update({"has_paid": False})
             
+            # 2.4 ดึงยอดขั้นต่ำ
             min_inc = state.get('auction',{}).get('min_increment', 0)
+            
+            # 2.5 ส่งข้อความ (ใช้ Reply)
             msg_start = get_witty_speech("start", min_inc)
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg_start))
+            
         except Exception as e:
+            # ถ้ามี Error จริงๆ ให้ Print ลง Console แต่พยายามไม่ให้เงียบ
             print(f"Start Bid Error: {e}")
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="⚠️ เกิดข้อผิดพลาดเล็กน้อย แต่พยายามเปิดประมูลให้แล้วครับ ลองบิดดูนะ!"))
         return
 
     # 3. จบวงแชร์
@@ -186,7 +196,7 @@ def handle_text(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="⚠️ ล้างข้อมูลจบวงแชร์เรียบร้อย (Reset All)"))
         return
 
-    # 4. เมนูช่วยเหลือ (จัดเต็ม)
+    # 4. เมนูช่วยเหลือ
     if text == "/help":
         msg = (f"📖 **คู่มือพี่รวย (V.{BOT_VERSION})**\n\n"
                "🛠 **คำสั่งทั่วไป:**\n"
@@ -204,25 +214,21 @@ def handle_text(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg))
         return
 
-    # 5. สถานะวง (จัดเต็ม)
+    # 5. สถานะวง
     if text == "/status":
-        # เตรียมข้อมูล
         share_amt = state.get('share_amount', 0)
         min_inc = state.get('auction',{}).get('min_increment', 0)
         pot_balance = state.get('pot_balance', 0)
         
-        # ประวัติคนชนะ
         history = state.get("winners_history", [])
         hist_text = "\n".join([f"{i+1}. {h['name']} | {h['date']} | {h['bid']} บ." for i, h in enumerate(history)])
         if not history: hist_text = "- ยังไม่มีผู้ชนะ -"
         
-        # การใช้เงินกองกลาง
         pot_usage = state.get("pot_usage", [])
         total_used = sum(u['amount'] for u in pot_usage)
         usage_text = "\n".join([f"- {u['date']}: {u['amount']} บ. ({u['reason']})" for u in pot_usage])
         if not pot_usage: usage_text = "- ยังไม่มีการใช้จ่าย -"
 
-        # ยอดคงเหลือ
         net_balance = pot_balance - total_used
 
         msg = (f"📊 **สถานะวงแชร์** ({get_now_str()})\n"
