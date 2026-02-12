@@ -7,12 +7,12 @@ import firebase_admin
 from firebase_admin import credentials, db
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
+from linebot.exceptions import InvalidSignatureError, LineBotApiError
 from linebot.models import MessageEvent, TextMessage, ImageMessage, TextSendMessage
 
 # --- 0. ข้อมูลเวอร์ชัน ---
-BOT_VERSION = "1.3.2"
-LAST_UPDATE = "12/02/2026 (Fixed Priority)"
+BOT_VERSION = "1.3.4"
+LAST_UPDATE = "12/02/2026 (Full Features)"
 
 app = Flask(__name__)
 
@@ -36,41 +36,62 @@ tz_bangkok = pytz.timezone('Asia/Bangkok')
 def get_state(): return ref.get() or {}
 def get_now_str(): return datetime.datetime.now(tz_bangkok).strftime('%d/%m/%Y %H:%M')
 
-# --- 3. ระบบนับถอยหลัง (คงเดิม 100%) ---
+# ======================================================
+# 🕒 ส่วนที่ 1: ระบบนับถอยหลัง (อยู่ตรงนี้ครับ!)
+# ======================================================
 def countdown_logic(reply_to_id, bid_amount):
-    time.sleep(30) # จังหวะ 1: รอ 30 วิ
+    # จังหวะที่ 1: รอ 30 วินาที
+    time.sleep(30)
+    
     state = get_state()
     auction = state.get("auction", {})
     
+    # เช็คว่าราคายังเท่าเดิมไหม (ถ้าเปลี่ยนแสดงว่ามีคนบิดสู้ไปแล้ว)
     if auction.get("is_active") and auction.get("current_price") == bid_amount:
-        line_bot_api.push_message(reply_to_id, TextSendMessage(text=f"⏳ พี่รวยแง้มค้อนแล้ว! เหลือ 30 วิสุดท้าย ยอดปัจจุบัน {bid_amount} บ. มีใครสู้เพิ่มไหม?"))
         
-        # จังหวะ 2: นับ 10 ถอยหลัง
+        # [จุดที่ท่านถามหา]: แจ้งเตือน 30 วิสุดท้าย
+        try:
+            line_bot_api.push_message(reply_to_id, TextSendMessage(text=f"⏳ พี่รวยแง้มค้อนแล้ว! เหลือ 30 วิสุดท้าย ยอดปัจจุบัน {bid_amount} บ. มีใครสู้เพิ่มไหม?"))
+        except LineBotApiError as e:
+            print(f"Push Error (30s): {e}") # ดู Log ได้ถ้าส่งไม่ไป
+
+        # [จุดที่ท่านถามหา]: นับถอยหลัง 10-1
         for i in range(10, 0, -1):
-            time.sleep(3)
+            time.sleep(3) # หน่วงเลขละ 3 วิ
+            
+            # เช็คซ้ำกันเหนียว (Anti-Sniping)
             curr_state = get_state()
             curr_auction = curr_state.get("auction", {})
             if not curr_auction.get("is_active") or curr_auction.get("current_price") != bid_amount:
                 return 
-            line_bot_api.push_message(reply_to_id, TextSendMessage(text=str(i)))
+
+            try:
+                line_bot_api.push_message(reply_to_id, TextSendMessage(text=str(i)))
+            except: pass # ตรงนี้นับเลข ถ้าส่งไม่ไปให้ข้ามเลยเดี๋ยวรำคาญ
         
+        # เช็คครั้งสุดท้ายและปิดประมูล
         final_state = get_state()
         final_auction = final_state.get("auction", {})
         if final_auction.get("is_active") and final_auction.get("current_price") == bid_amount:
             winner = final_auction.get("winner_name", "ไม่ระบุ")
             now_date = get_now_str().split()[0]
             
+            # อัปเดตปิดงาน
             ref.child('auction').update({"is_active": False, "waiting_for_account": True})
             
+            # บันทึกประวัติ
             history = final_state.get("winners_history", [])
             history.append({"name": winner, "date": now_date, "bid": bid_amount})
-            
             won_names = final_state.get("won_names", [])
             if winner not in won_names: won_names.append(winner)
-            
             ref.update({"winners_history": history, "won_names": won_names})
-            msg = f"🏁 ปิดประมูลเรียบร้อย!\n🏆 ผู้ชนะ: คุณ {winner}\n💰 ยอดบิด: {bid_amount} บ.\n📅 วันที่ชนะ: {now_date}\n⚠️ รบกวนส่งเลขบัญชีด้วยครับ"
-            line_bot_api.push_message(reply_to_id, TextSendMessage(text=msg))
+            
+            # ประกาศคนชนะ
+            try:
+                msg = f"🏁 ปิดประมูลเรียบร้อย!\n🏆 ผู้ชนะ: คุณ {winner}\n💰 ยอดบิด: {bid_amount} บ.\n📅 วันที่ชนะ: {now_date}\n⚠️ รบกวนส่งเลขบัญชีด้วยครับ"
+                line_bot_api.push_message(reply_to_id, TextSendMessage(text=msg))
+            except LineBotApiError as e:
+                print(f"Push Error (End): {e}")
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -101,35 +122,32 @@ def handle_text(event):
     user_id = event.source.user_id
     reply_to_id = event.source.group_id if hasattr(event.source, 'group_id') else user_id
 
-    # =======================================================
-    # ZONE 1: คำสั่งสำคัญ (ย้ายขึ้นมาบนสุด เพื่อให้ทำงานก่อน Setup)
-    # =======================================================
+    # ======================================================
+    # 🕒 ส่วนที่ 2: คำสั่งสำคัญ (Prioritized)
+    # ======================================================
     
-    # 1.1 ตั้งค่าวงแชร์ (เริ่มใหม่เสมอ)
     if text == "ตั้งค่าวงแชร์":
         ref.update({"setup_step": 1, "won_names": [], "winners_history": [], "reminded": False})
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📝 เริ่มตั้งค่าใหม่ (พี่รวย)\n1. ยอดส่งต่อคนเท่าไหร่? (ตัวเลข)"))
         return
 
-    # 1.2 เปิดประมูล (Start Bid) - บังคับเคลียร์ Setup Step
     if text == "/start_bid":
-        ref.update({"setup_step": 0}) # แก้บั๊กค้างหน้าตั้งค่า
+        ref.update({"setup_step": 0})
         ref.child('auction').update({"is_active": True, "current_price": 0, "winner_name": "", "winner_id": ""})
-        for mid in state.get("members", {}): ref.child('members').child(mid).update({"has_paid": False})
+        members = state.get("members") or {}
+        for mid in members: ref.child('members').child(mid).update({"has_paid": False})
         
         min_inc = state.get('auction',{}).get('min_increment', 0)
         date_str = get_now_str().split()[0]
-        msg = f"📢 พี่รวยเปิดประมูลรอบวันที่ {date_str}!\n📈 บิดขั้นต่ำ: {min_inc} บ.\n⏳ ใครอยากรวยพิมพ์ตัวเลขบิดมาเลยครับสมาชิก!"
-        line_bot_api.push_message(reply_to_id, TextSendMessage(text=f"📢 @all {msg}"))
+        msg = f"📢 @all พี่รวยเปิดประมูลรอบวันที่ {date_str}!\n📈 บิดขั้นต่ำ: {min_inc} บ.\n⏳ ใครอยากรวยพิมพ์ตัวเลขบิดมาเลยครับสมาชิก!"
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg))
         return
 
-    # 1.3 จบวงแชร์ (Lange Data)
     if text == "/end_share":
         ref.set({})
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="⚠️ ล้างข้อมูลจบวงแชร์เรียบร้อยครับ"))
         return
 
-    # 1.4 เมนูช่วยเหลือ
     if text == "/help":
         msg = (f"📖 คู่มือพี่รวย (V.{BOT_VERSION})\n"
                "• ตั้งค่าวงแชร์ : ตั้งค่าใหม่\n"
@@ -159,7 +177,7 @@ def handle_text(event):
         return
 
     if text == "/check_pay":
-        members = state.get("members", {})
+        members = state.get("members") or {}
         paid = [m['name'] for m in members.values() if m.get('has_paid')]
         unpaid = [m['name'] for m in members.values() if not m.get('has_paid')]
         msg = f"💳 เช็คยอดโอน\n✅ โอนแล้ว ({len(paid)}): {', '.join(paid)}\n❌ ยังไม่โอน ({len(unpaid)}): {', '.join(unpaid)}"
@@ -186,9 +204,9 @@ def handle_text(event):
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"💸 หักกองกลาง {amt} บ. (ค่า {reason})"))
         return
 
-    # =======================================================
-    # ZONE 2: โหมดตั้งค่า (Setup Mode)
-    # =======================================================
+    # ======================================================
+    # 🕒 ส่วนที่ 3: โหมดตั้งค่า (Setup)
+    # ======================================================
     step = state.get("setup_step", 0)
     if step > 0:
         if step == 1 and text.isdigit():
@@ -210,12 +228,11 @@ def handle_text(event):
         elif step == 6:
             ref.update({"play_time": text, "setup_step": 0, "group_id": reply_to_id})
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="🎉 ตั้งค่าสำเร็จ! พี่รวยพร้อมทำงานแล้วครับ!"))
-        # ถ้าติด Setup อยู่แต่พิมพ์ไม่ใช่ตัวเลข ให้หยุดตรงนี้ (ไม่ไปเช็คบิด)
         return
 
-    # =======================================================
-    # ZONE 3: ระบบบิดราคา (Bidding Logic)
-    # =======================================================
+    # ======================================================
+    # 🕒 ส่วนที่ 4: ระบบบิดราคา (Bidding)
+    # ======================================================
     if text.isdigit() and state.get("auction", {}).get("is_active"):
         bid = int(text)
         curr = state["auction"].get("current_price", 0)
@@ -235,9 +252,11 @@ def handle_text(event):
                 ref.child('auction').update({"current_price": bid, "winner_name": name, "winner_id": user_id})
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"✅ รับยอด {bid} บ. โดยคุณ {name}"))
                 
+                # เริ่มนับถอยหลังทันทีที่รับยอด
                 threading.Thread(target=countdown_logic, args=[reply_to_id, bid]).start()
             except: pass
         else:
+            # [จุดที่ท่านถามหา]: แจ้งเตือนบิดต่ำ
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"⚠️ ยอดน้อยไป! ต้องบิดอย่างน้อย {required} บ. ครับ"))
         return
 
