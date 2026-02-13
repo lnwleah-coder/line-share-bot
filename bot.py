@@ -12,8 +12,8 @@ from linebot.exceptions import InvalidSignatureError, LineBotApiError
 from linebot.models import MessageEvent, TextMessage, ImageMessage, TextSendMessage
 
 # --- 0. ข้อมูลเวอร์ชัน ---
-BOT_VERSION = "1.4.3"
-LAST_UPDATE = "12/02/2026 (Fix Start_Bid Crash)"
+BOT_VERSION = "2.0.0"
+LAST_UPDATE = "12/02/2026 (Leah Version)"
 
 app = Flask(__name__)
 
@@ -162,32 +162,37 @@ def handle_text(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📝 เริ่มตั้งค่าใหม่ (พี่รวย)\n1. ยอดส่งต่อคนเท่าไหร่? (ตัวเลข)"))
         return
 
-    # 2. เปิดประมูล (แก้ไขจุดที่เคยพัง)
+    # 2. เปิดประมูล (แก้ไขจุดที่เคยพัง - Verified V.1.4.5)
     if text == "/start_bid":
         try:
-            # 2.1 บังคับรีเซ็ต Setup เป็น 0 เพื่อแก้บั๊กค้าง
-            ref.update({"setup_step": 0}) 
+            ref.update({"setup_step": 0}) # ปลดล็อกโหมดตั้งค่า
             
-            # 2.2 รีเซ็ตสถานะประมูล
-            ref.child('auction').update({"is_active": True, "current_price": 0, "winner_name": "", "winner_id": ""})
+            # ดึงค่า min_increment มาไว้ก่อน กันพัง
+            auction_data = state.get('auction') or {}
+            min_inc = auction_data.get('min_increment', 0)
             
-            # 2.3 ล้างสถานะจ่ายเงิน (ใส่ Check กันพัง)
+            # อัปเดตประมูล
+            ref.child('auction').update({
+                "is_active": True, 
+                "current_price": 0, 
+                "winner_name": "", 
+                "winner_id": ""
+            })
+            
+            # ล้างสถานะคนโอน (เช็คก่อนว่ามีสมาชิกไหม)
             members = state.get("members")
-            if members: # ถ้ามีสมาชิกในระบบค่อยทำ ถ้าไม่มีก็ข้ามไป (ไม่ Error)
-                for mid in members: 
+            if members:
+                for mid in members:
                     ref.child('members').child(mid).update({"has_paid": False})
-            
-            # 2.4 ดึงยอดขั้นต่ำ
-            min_inc = state.get('auction',{}).get('min_increment', 0)
-            
-            # 2.5 ส่งข้อความ (ใช้ Reply)
+
+            # --- ย้ายคำสั่งส่งข้อความมาไว้ "ข้างใน" if ---
             msg_start = get_witty_speech("start", min_inc)
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg_start))
             
         except Exception as e:
-            # ถ้ามี Error จริงๆ ให้ Print ลง Console แต่พยายามไม่ให้เงียบ
-            print(f"Start Bid Error: {e}")
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="⚠️ เกิดข้อผิดพลาดเล็กน้อย แต่พยายามเปิดประมูลให้แล้วครับ ลองบิดดูนะ!"))
+            print(f"Error in start_bid: {e}")
+            # ถ้าพังจริงๆ ให้ส่งข้อความสำรอง
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📢 @all พี่รวยเปิดประมูลแล้วครับ! ใครร้อนเงินจัดมา!"))
         return
 
     # 3. จบวงแชร์
@@ -312,7 +317,7 @@ def handle_text(event):
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="🎉 ตั้งค่าสำเร็จ! พี่รวยพร้อมทำงานแล้วครับ!"))
         return
 
-    # ======================================================
+   # ======================================================
     # 📝 ZONE 3: ระบบบิดราคา (Bidding)
     # ======================================================
     if text.isdigit() and state.get("auction", {}).get("is_active"):
@@ -325,7 +330,7 @@ def handle_text(event):
         
         if bid >= required:
             try:
-                profile = line_bot_api.get_group_member_profile(reply_to_id, user_id) if hasattr(event.source, 'group_id') else line_bot_api.get_profile(user_id)
+                profile = line_bot_api.get_group_member_profile(reply_to_id, user_id) if hasattr(event.source, 'group_id') else 			line_bot_api.get_profile(user_id)
                 name = profile.display_name
                 
                 if name in state.get("won_names", []):
@@ -342,11 +347,11 @@ def handle_text(event):
                 threading.Thread(target=countdown_logic, args=[reply_to_id, bid]).start()
             except: pass
         else:
-            # [สุ่มคำพูด]: บิดต่ำ
-            msg_low = get_witty_speech("low_bid", required)
+            # แก้ไขจุดนี้: ขยับ else ให้ตรงกับ if bid >= required และส่งค่า data ให้ถูก
+            msg_low = get_witty_speech("low_bid", data=required)
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg_low))
         return
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+	if __name__ == "__main__":
+   		 port = int(os.environ.get("PORT", 5000))
+    		app.run(host='0.0.0.0', port=port)
