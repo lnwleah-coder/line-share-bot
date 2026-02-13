@@ -352,6 +352,6 @@ def handle_text(event):
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg_low))
         return
 
-	if __name__ == "__main__":
-   		 port = int(os.environ.get("PORT", 5000))
-    		app.run(host='0.0.0.0', port=port)
+    if __name__ == "__main__":
+            port = int(os.environ.get("PORT", 5000))
+            app.run(host='0.0.0.0', port=port)
